@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { exec } from 'child_process';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -7,25 +9,34 @@ export function activate(context: vscode.ExtensionContext) {
 	// 存储每行的 blame 信息，key 为行号，value 为 blame 文本
 	const blameMap = new Map<number, { commitHash: string; date: string; author: string; rawText: string }>();
 
+	// 从文件路径向上查找包含 .git 的目录
+	function findGitRoot(filePath: string): string | undefined {
+		let dir = path.dirname(filePath);
+		const root = path.parse(dir).root;
+
+		while (dir !== root) {
+			if (fs.existsSync(path.join(dir, '.git'))) {
+				return dir;
+			}
+			dir = path.dirname(dir);
+		}
+		return undefined;
+	}
+
 	// 定义一个函数来检测当前文件是否在 Git 管理的项目中
 	function checkGitRepositoryForActiveEditor() {
 		const editor = vscode.window.activeTextEditor;
 		if (editor) {
-			const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-			if (workspaceFolder) {
-				// 默认启动文件，blameActive都是false
-				isBlameActive = false;
-				vscode.commands.executeCommand('setContext', 'blameActive', false);
+			// 默认启动文件，blameActive都是false
+			isBlameActive = false;
+			vscode.commands.executeCommand('setContext', 'blameActive', false);
 
-				const workspacePath = workspaceFolder.uri.fsPath;
-				// 检查当前文件是否在 Git 管理的项目中
-				exec(`git rev-parse --is-inside-work-tree`, { cwd: workspacePath }, (error, stdout) => {
-					if (error || stdout.trim() !== 'true') {
-						vscode.commands.executeCommand('setContext', 'isGitRepository', false);
-					} else {
-						vscode.commands.executeCommand('setContext', 'isGitRepository', true);
-					}
-				});
+			const filePath = editor.document.fileName;
+			// 从文件目录向上查找 .git 目录
+			const gitRoot = findGitRoot(filePath);
+
+			if (gitRoot) {
+				vscode.commands.executeCommand('setContext', 'isGitRepository', true);
 			} else {
 				vscode.commands.executeCommand('setContext', 'isGitRepository', false);
 			}
@@ -54,23 +65,20 @@ export function activate(context: vscode.ExtensionContext) {
 		const editor = vscode.window.activeTextEditor;
 		if (editor) {
 			const filePath = editor.document.fileName;
-			const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
 
-			if (workspaceFolder) {
-				const workspacePath = workspaceFolder.uri.fsPath;
+			// 从文件目录向上查找 .git 目录
+			const gitRoot = findGitRoot(filePath);
 
-				// 检查文件是否在 Git 管理的项目中
-				exec(`git rev-parse --is-inside-work-tree`, { cwd: workspacePath }, (error, stdout, stderr) => {
-					if (error || stdout.trim() !== 'true') {
-						vscode.window.showErrorMessage('This file is not part of a Git repository.');
-						return;
-					}
+			if (!gitRoot) {
+				vscode.window.showErrorMessage('This file is not part of a Git repository.');
+				return;
+			}
 
-					exec(`git blame ${filePath}`, { cwd: workspacePath }, (error, stdout, stderr) => {
-						if (error) {
-							vscode.window.showErrorMessage(`Error: ${stderr}`);
-							return;
-						}
+			exec(`git blame ${filePath}`, { cwd: gitRoot }, (error, stdout, stderr) => {
+				if (error) {
+					vscode.window.showErrorMessage(`Error: ${stderr}`);
+					return;
+				}
 
 						// 处理 git blame 输出
 						const blameInfo = stdout.split('\n');
@@ -170,10 +178,8 @@ export function activate(context: vscode.ExtensionContext) {
 						blameDecorationType = vscode.window.createTextEditorDecorationType({});
 						editor.setDecorations(blameDecorationType, decorations);
 					});
-				});
 			}
-		}
-	});
+		});
 
 	// 注册 Clear Annotate 命令
 	let clearDisposable = vscode.commands.registerCommand('extension.clearAnnotations', () => {
