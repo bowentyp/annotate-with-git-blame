@@ -4,7 +4,8 @@ import { exec } from 'child_process';
 export function activate(context: vscode.ExtensionContext) {
 	let isBlameActive = false;
 	let blameDecorationType: vscode.TextEditorDecorationType | undefined;
-	let selectionChangeListener: vscode.Disposable | undefined;
+	// 存储每行的 blame 信息，key 为行号，value 为 blame 文本
+	const blameMap = new Map<number, { commitHash: string; date: string; author: string; rawText: string }>();
 
 	// 定义一个函数来检测当前文件是否在 Git 管理的项目中
 	function checkGitRepositoryForActiveEditor() {
@@ -95,6 +96,9 @@ export function activate(context: vscode.ExtensionContext) {
 							}
 						});
 
+						// 清空之前的 blame 数据
+						blameMap.clear();
+
 						blameInfo.forEach((line, index) => {
 							let match = line.match(/^\^?(\w+)\s\((.*?)\s+(\d{4}-\d{2}-\d{2})\s.*?\s(\d+)\)\s/);
 							// 检测 Vue 文件中的 `blameInfo` 格式
@@ -108,6 +112,14 @@ export function activate(context: vscode.ExtensionContext) {
 								const date = match[3].replace(/-/g, '/'); // 将日期格式转换为年/月/日
 								const lineNumber = parseInt(match[4], 10) - 1;
 								let blameText = `${commitHash} ${date} ${author}`;
+
+								// 存储 blame 信息到 Map
+								blameMap.set(lineNumber, {
+									commitHash,
+									date,
+									author,
+									rawText: blameText.trim()
+								});
 
 								// 补齐长度
 								while (blameText.length < maxLength) {
@@ -157,51 +169,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 						blameDecorationType = vscode.window.createTextEditorDecorationType({});
 						editor.setDecorations(blameDecorationType, decorations);
-
-						// 添加点击事件
-						selectionChangeListener = vscode.window.onDidChangeTextEditorSelection((e: vscode.TextEditorSelectionChangeEvent) => {
-							// 获取当前选择的文本范围
-							let selection = e.selections[0];
-							// 获取点击位置的字符
-							let position = selection.active;
-
-							const selectedLine = selection.start.line;
-							const selectedDecoration = decorations.find(decoration => decoration.range.start.line === selectedLine);
-
-							// position.character === 0是为了实现：只能在commit 信息区域时才能跳转~~
-							if (selectedDecoration && position.character === 0) {
-								const commitHash = selectedDecoration.renderOptions?.before?.contentText?.trim().split(' ')[0];
-								console.log(`Selected commit hash: ${commitHash}`); // 添加日志
-								console.log(`Selected commit repoPath: ${workspaceFolder.uri.path}`); // 添加日志
-								if (commitHash) {
-									// 检查 GitLens 是否能够匹配 commit graph 信息
-									vscode.commands.executeCommand('gitlens.showInCommitGraphView', {
-										ref: {
-											name: commitHash,
-											ref: commitHash,
-											refType: 'revision',
-											repoPath: workspaceFolder.uri.path,
-											sha: commitHash
-										},
-									}).then(() => {
-										console.log(`Successfully executed command for commit hash: ${commitHash}`);
-									}, (err) => {
-										console.error(`Failed to execute command for commit hash: ${commitHash}`, err);
-										vscode.window.showErrorMessage(`Failed to execute command for commit hash: ${commitHash}`);
-									});
-								}
-							}
-						});
-
-						// 监听文件切换，自动清理装饰器和事件
-						vscode.window.onDidChangeActiveTextEditor(() => {
-							if (blameDecorationType) {
-								blameDecorationType.dispose();
-							}
-							if (selectionChangeListener) {
-								selectionChangeListener.dispose();
-							}
-						});
 					});
 				});
 			}
@@ -218,6 +185,9 @@ export function activate(context: vscode.ExtensionContext) {
 		isBlameActive = false;
 		vscode.commands.executeCommand('setContext', 'blameActive', false);
 
+		// 清空 blame 数据
+		blameMap.clear();
+
 		const editor = vscode.window.activeTextEditor;
 		if (editor) {
 			// 创建一个空的 TextEditorDecorationType 来清除所有装饰
@@ -230,14 +200,44 @@ export function activate(context: vscode.ExtensionContext) {
 			blameDecorationType.dispose();
 			blameDecorationType = undefined;
 		}
-		if (selectionChangeListener) {
-			selectionChangeListener.dispose();
-			selectionChangeListener = undefined;
+	});
+
+	// 复制 Blame 文本命令
+	let copyDisposable = vscode.commands.registerCommand('extension.copyBlameText', () => {
+		const editor = vscode.window.activeTextEditor;
+		if (editor) {
+			const lineNumber = editor.selection.active.line;
+			const blame = blameMap.get(lineNumber);
+			if (blame) {
+				vscode.env.clipboard.writeText(blame.rawText);
+				vscode.window.showInformationMessage(`已复制：${blame.rawText}`);
+			} else {
+				vscode.window.showWarningMessage('当前行没有 Blame 信息');
+			}
+		}
+	});
+
+	// 注册 Hover Provider，鼠标悬停时显示 blame 信息和复制按钮
+	const hoverProvider = vscode.languages.registerHoverProvider('*', {
+		provideHover(document: vscode.TextDocument, position: vscode.Position) {
+			if (!isBlameActive) {
+				return undefined;
+			}
+			const blame = blameMap.get(position.line);
+			if (blame) {
+				const markdown = new vscode.MarkdownString();
+				markdown.isTrusted = true; // 允许命令链接
+				markdown.appendMarkdown(`[${blame.rawText}](command:extension.copyBlameText "点击复制")\n\n[复制](command:extension.copyBlameText "复制 Blame 信息)`);
+				return new vscode.Hover(markdown);
+			}
+			return undefined;
 		}
 	});
 
 	context.subscriptions.push(disposable);
 	context.subscriptions.push(clearDisposable);
+	context.subscriptions.push(copyDisposable);
+	context.subscriptions.push(hoverProvider);
 }
 
 export function deactivate() { }

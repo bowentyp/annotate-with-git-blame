@@ -24,12 +24,17 @@
     "commands": [
       {
         "command": "extension.annotateWithGitBlame",
-        "title": "Annotate with Git Blame",
+        "title": "Show Blame Inline",
         "category": "Git"
       },
       {
         "command": "extension.clearAnnotations",
-        "title": "Clear Annotate",
+        "title": "Hide Blame Inline",
+        "category": "Git"
+      },
+      {
+        "command": "extension.copyBlameText",
+        "title": "Copy Blame Text",
         "category": "Git"
       }
     ],
@@ -42,6 +47,11 @@
         },
         {
           "command": "extension.clearAnnotations",
+          "when": "isGitRepository && blameActive == true",
+          "group": "navigation"
+        },
+        {
+          "command": "extension.copyBlameText",
           "when": "isGitRepository && blameActive == true",
           "group": "navigation"
         }
